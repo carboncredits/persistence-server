@@ -9,20 +9,20 @@ import (
 
 type Species struct {
 	gorm.Model
-	Taxa string `gorm:"size:32,not null,index"`
+	Taxa string `gorm:"type:varchar(32);not null;index"`
 }
 
 type Experiment struct {
 	gorm.Model
-	Name string `gorm:"not null,unique"`
+	Name string `gorm:"type:varchar(128);not null;unique"`
 }
 
 type Tile struct {
-	ID           uint    `gorm:"primaryKey,not null"`
-	Tile         string  `gorm:"size:16,not null,index"`
-	Species      uint    `gorm:"not null,index"`
+	ID           uint    `gorm:"primaryKey;not null"`
+	Tile         string  `gorm:"type:varchar(16);index:idx_tile_tile;index:idx_tile_unique,unique;not null"`
+	Species      uint    `gorm:"index:idx_tile_species;index:idx_tile_unique,unique;not null"`
 	Area         float64 `gorm:"not null"`
-	ExperimentID uint    `gorm:"not null,index"`
+	ExperimentID uint    `gorm:"index:idx_tile_experiment;index:idx_tile_unique,unique;not null"`
 	// Center     EWKBGeomPoint `gorm:"column:geom"`
 }
 
@@ -37,7 +37,7 @@ func Migrate(db *gorm.DB) error {
 			Migrate: func(tx *gorm.DB) error {
 				type experiment struct {
 					gorm.Model
-					Name string `gorm:"not null"`
+					Name string `gorm:"type:varchar(128);not null;unique"`
 				}
 				err := tx.AutoMigrate(&experiment{})
 				if err != nil {
@@ -45,18 +45,18 @@ func Migrate(db *gorm.DB) error {
 				}
 				type species struct {
 					gorm.Model
-					Taxa string `gorm:"size:32,not null,index"`
+					Taxa string `gorm:"type:varchar(32);not null;index"`
 				}
 				err = tx.AutoMigrate(&species{})
 				if err != nil {
 					return err
 				}
 				type tile struct {
-					ID           uint    `gorm:"primaryKey,not null"`
-					Tile         string  `gorm:"size:16,not null,index"`
-					Species      uint    `gorm:"not null,index"`
+					ID           uint    `gorm:"primaryKey;not null"`
+					Tile         string  `gorm:"type:varchar(16);index:idx_tile_tile;index:idx_tile_unique,unique;not null"`
+					Species      uint    `gorm:"index:idx_tile_species;index:idx_tile_unique,unique;not null"`
 					Area         float64 `gorm:"not null"`
-					ExperimentID uint    `gorm:"not null,index"`
+					ExperimentID uint    `gorm:"index:idx_tile_experiment;index:idx_tile_unique,unique;not null"`
 				}
 				return tx.AutoMigrate(&tile{})
 			},
