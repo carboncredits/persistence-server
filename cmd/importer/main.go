@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -9,14 +8,18 @@ import (
 	"regexp"
 	"strconv"
 
-	dataframe "github.com/rocketlaunchr/dataframe-go"
-	"github.com/rocketlaunchr/dataframe-go/imports"
 	"github.com/xitongsys/parquet-go-source/local"
+	"github.com/xitongsys/parquet-go/reader"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"quantify.earth/bioserver/internal/database"
 )
+
+type CellData struct {
+	Cell string `parquet:"name=cell, type=BYTE_ARRAY, repetitiontype=OPTIONAL"`
+	Area float64 `parquet:"name=area, type=DOUBLE, repetitiontype=OPTIONAL"`
+}
 
 func processSingleSpecies(db *gorm.DB, species_path string, taxa string, experiment database.Experiment) error {
 	// Get the species ID from the filename, which should be of the form: res_1234_7.parquet
@@ -30,6 +33,7 @@ func processSingleSpecies(db *gorm.DB, species_path string, taxa string, experim
 	if err != nil {
 		return fmt.Errorf("failed to parse species id %v: %w", matches[1], err)
 	}
+	log.Printf("processing species %d", species_id)
 
 	species := database.Species{
 		gorm.Model{ID: uint(species_id)},
@@ -40,54 +44,63 @@ func processSingleSpecies(db *gorm.DB, species_path string, taxa string, experim
 		return err
 	}
 
+	log.Printf("opening parquet")
 	fr, err := local.NewLocalFileReader(species_path)
 	if err != nil {
 		return err
 	}
 	defer fr.Close()
-	ctx := context.Background()
-	df, err := imports.LoadFromParquet(ctx, fr)
+
+	log.Printf("parsing parquet")
+	pr, err := reader.NewParquetReader(fr, new(CellData), 24)
 	if err != nil {
 		return err
 	}
+	defer pr.ReadStop()
 
-	// drop tiles with an area of zero
-	filterFn := dataframe.FilterDataFrameFn(func(vals map[interface{}]interface{}, row, nRows int) (dataframe.FilterAction, error) {
-		if vals["area"].(float64) == 0.0 {
-			return dataframe.DROP, nil
+	rows := int(pr.GetNumRows())
+	log.Printf("Row count %d",rows)
+	BATCH_SIZE := 1000
+	for idx := 0; idx < rows; idx += BATCH_SIZE {
+		count := min(BATCH_SIZE, rows - idx)
+		buffer := make([]CellData, count)
+		err := pr.Read(&buffer)
+		if err != nil {
+			return err
 		}
-		return dataframe.KEEP, nil
-	})
-	inonzero, err := dataframe.Filter(ctx, df, filterFn)
-	if err != nil {
-		return err
-	}
-	nonzero := inonzero.(*dataframe.DataFrame)
-
-	tile_count := nonzero.NRows()
-	tiles := make([]database.Tile, tile_count)
-
-	iterator := nonzero.ValuesIterator()
-	for {
-		row, vals, _ := iterator()
-		if row == nil {
-			break
+		non_zero_count := 0
+		for _, cell := range(buffer) {
+			if cell.Area == 0.0 {
+				continue
+			}
+			non_zero_count += 1
 		}
-		cell := vals["cell"].(string)
-		area := vals["area"].(float64)
-
-		tile := database.Tile{
-			Tile:         cell,
-			Species:      species.ID,
-			Area:         area,
-			ExperimentID: experiment.ID,
+		if non_zero_count == 0 {
+			continue
 		}
-		tiles[*row] = tile
+
+		tiles := make([]database.Tile, non_zero_count)
+		tiles_idx := 0
+		for row := 0; row < count; row++ {
+			cell := buffer[row]
+			if cell.Area == 0.0 {
+				continue
+			}
+			tiles[tiles_idx] = database.Tile{
+				Tile: cell.Cell,
+				Area: cell.Area,
+				Species: species.ID,
+				ExperimentID: experiment.ID,
+			}
+			tiles_idx += 1
+		}
+		err = db.Create(&tiles).Error
+		if err != nil {
+			return err
+		}
 	}
-	err = db.CreateInBatches(&tiles, 1000).Error
-	if err != nil {
-		return err
-	}
+
+	log.Printf("Completed %d", species_id)
 
 	return nil
 }
